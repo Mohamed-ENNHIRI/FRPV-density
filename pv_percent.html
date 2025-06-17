@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FRPV Explorer - 3D France (Commune Level)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href='https://unpkg.com/maplibre-gl@4.1.3/dist/maplibre-gl.css' rel='stylesheet' />
+    <script src='https://unpkg.com/maplibre-gl@4.1.3/dist/maplibre-gl.js'></script>
+    <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+    <script src='https://unpkg.com/@turf/turf@6/turf.min.js'></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; margin: 0; padding: 0; overflow: hidden; }
+        #map { position: absolute; top: 0; bottom: 0; width: 100%; }
+        .map-overlay {
+            position: absolute;
+            background: rgba(255, 255, 255, 0.85);
+            backdrop-filter: blur(5px);
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            padding: 15px;
+            z-index: 1;
+            font-size: 14px;
+            transition: opacity 0.2s;
+        }
+        #title-card { top: 20px; left: 20px; max-width: 280px; }
+        #info-panel { top: 150px; left: 20px; width: 280px; }
+        #legend { bottom: 30px; left: 20px; }
+        #credits-button { bottom: 30px; right: 20px; padding: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+        .legend-gradient { height: 15px; width: 100%; border-radius: 4px; background: linear-gradient(to right, #ff0000, #ffff00, #00ff00); }
+        .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.5); backdrop-filter: blur(5px); }
+        .modal-content { background-color: #fefefe; margin: 15% auto; padding: 25px; border: 1px solid #888; width: 90%; max-width: 550px; border-radius: 10px; position: relative; }
+        .close-button { color: #aaa; position: absolute; top: 10px; right: 20px; font-size: 30px; font-weight: bold; cursor: pointer; }
+        .loader { border: 4px solid #f3f3f3; border-top: 4px solid #3498db; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; }
+        #loading-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 2000; flex-direction: column; color: white; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        
+        /* Search Bar Styles */
+        #search-container {
+            top: 20px;
+            right: 20px;
+            width: 280px;
+        }
+        #search-results {
+            max-height: 200px;
+            overflow-y: auto;
+            margin-top: 5px;
+        }
+        .search-result-item {
+            padding: 8px;
+            cursor: pointer;
+            border-bottom: 1px solid #eee;
+        }
+        .search-result-item:hover {
+            background-color: #f0f0f0;
+        }
+        .search-result-item:last-child {
+            border-bottom: none;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="map"></div>
+
+    <div id="title-card" class="map-overlay">
+        <h1 class="text-xl font-bold text-gray-800">FRPV Explorer</h1>
+        <p class="text-sm text-gray-600">3D PV Rooftop Density by Commune</p>
+    </div>
+    
+    <div id="search-container" class="map-overlay">
+        <input type="text" id="searchInput" placeholder="Search for a commune..." class="w-full p-2 border border-gray-300 rounded-md">
+        <div id="searchResults"></div>
+    </div>
+
+    <div id="info-panel" class="map-overlay">
+        <h2 id="info-name" class="text-lg font-bold text-gray-800 mb-2">Hover over a commune</h2>
+        <div id="info-details" class="text-sm space-y-1 text-gray-700">
+            <p><strong>INSEE Code:</strong> <span id="info-insee">N/A</span></p>
+            <p><strong>Total Rooftops:</strong> <span id="info-total">N/A</span></p>
+            <p><strong>PV Rooftops:</strong> <span id="info-pv">N/A</span></p>
+            <p><strong>PV Penetration:</strong> <span id="info-penetration">N/A</span></p>
+        </div>
+    </div>
+    
+    <div id="legend" class="map-overlay w-56">
+        <h3 class="font-semibold text-gray-800 mb-2">PV Penetration</h3>
+        <div class="legend-gradient"></div>
+        <div class="flex justify-between text-xs text-gray-600 mt-1">
+            <span id="legend-low">Low</span>
+            <span id="legend-high">High</span>
+        </div>
+    </div>
+    
+    <div id="credits-button" class="map-overlay" title="Credits and Information">
+        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-gray-700"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
+    </div>
+
+    <div id="loading-overlay">
+        <div class="loader"></div>
+        <p id="loading-text" class="mt-4 text-lg">Loading Data...</p>
+    </div>
+
+    <div id="creditsModal" class="modal">
+        <div class="modal-content">
+            <span class="close-button" id="closeCreditsModal">&times;</span>
+            <h3 class="text-2xl font-semibold mb-4 text-gray-800">Credits & Information</h3>
+            <p class="mb-2"><strong>Data Source & Processing:</strong></p>
+            <p class="text-sm text-gray-700 mb-4">
+                This map visualizes the density of photovoltaic (PV) rooftops across France. The data is derived from GeoJSON files processed by a Python script, which counts the total and PV-equipped rooftops for each commune. The results are then aggregated to the department level for this visualization.
+            </p>
+            <p class="mb-2"><strong>Original Research:</strong></p>
+            <ul class="list-disc list-inside mb-4 text-sm text-gray-700">
+                <li><b>Martin Thebault & Boris Nerot</b> - These two authors contributed equally to this work. <a href="https://doi.org/10.1016/j.apenergy.2025.125630" target="_blank" rel="noopener noreferrer" class="text-sky-600 hover:underline">doi.org/10.1016/j.apenergy.2025.125630</a>,
+                    © 2025 The Author(s). Published by Elsevier Ltd. This is an open access article under the CC BY license.
+                </li>
+            </ul>
+             <p class="mb-2"><strong>Tool Development & Data Analysis:</strong></p>
+             <ul class="list-disc list-inside text-sm text-gray-700">
+                <li><b>Mohamed ENNHIRI</b> - For the creation of the original FRPV Explorer tool and the underlying data analysis.</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const COMMUNES_GEOJSON_URL = 'https://raw.githubusercontent.com/gregoiredavid/france-geojson/master/communes-avec-outre-mer.geojson';
+            const PV_COUNTS_CSV_URL = 'commune_pv_counts.csv';
+            
+            const COMMUNES_SOURCE_ID = 'communes-source';
+            const COMMUNES_3D_LAYER_ID = 'communes-3d-layer';
+            const COMMUNES_LINES_LAYER_ID = 'communes-lines-layer';
+
+            const uiElements = {
+                infoName: document.getElementById('info-name'),
+                infoInsee: document.getElementById('info-insee'),
+                infoTotal: document.getElementById('info-total'),
+                infoPv: document.getElementById('info-pv'),
+                infoPenetration: document.getElementById('info-penetration'),
+                loadingOverlay: document.getElementById('loading-overlay'),
+                loadingText: document.getElementById('loading-text'),
+                legendLow: document.getElementById('legend-low'),
+                legendHigh: document.getElementById('legend-high'),
+                searchInput: document.getElementById('searchInput'),
+                searchResults: document.getElementById('searchResults')
+            };
+
+            const map = new maplibregl.Map({
+                container: 'map',
+                style: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
+                center: [2.3522, 46.603354],
+                zoom: 5.2,
+                pitch: 45,
+                bearing: 0,
+                antialias: true,
+                maxZoom: 15
+            });
+
+            map.addControl(new maplibregl.NavigationControl(), 'top-right');
+            let hoveredCommuneId = null;
+            let communeFeatures = []; // To store features for searching
+
+            async function loadDataAndSetupMap() {
+                try {
+                    uiElements.loadingText.textContent = 'Fetching geographic and PV data...';
+                    const [communesGeoJSON, pvCountsResponse] = await Promise.all([
+                        fetch(COMMUNES_GEOJSON_URL).then(res => res.json()),
+                        fetch(PV_COUNTS_CSV_URL).then(res => res.text())
+                    ]);
+
+                    uiElements.loadingText.textContent = 'Parsing and aggregating PV data...';
+                    const pvDataByInsee = {};
+                    
+                    Papa.parse(pvCountsResponse, {
+                        header: true,
+                        skipEmptyLines: true,
+                        complete: (results) => {
+                            results.data.forEach(commune => {
+                                let insee = commune.insee_code;
+                                let targetInsee = insee;
+                                if (insee.startsWith('751')) targetInsee = '75056';
+                                else if (insee.startsWith('6938')) targetInsee = '69123';
+                                else if (insee.startsWith('132')) targetInsee = '13055';
+                                
+                                if (!pvDataByInsee[targetInsee]) {
+                                    pvDataByInsee[targetInsee] = { total_rooftops: 0, pv_rooftops_count: 0, insee_code: targetInsee };
+                                }
+                                pvDataByInsee[targetInsee].total_rooftops += parseInt(commune.total_rooftops) || 0;
+                                pvDataByInsee[targetInsee].pv_rooftops_count += parseInt(commune.pv_rooftops_count) || 0;
+                            });
+                        }
+                    });
+
+                    uiElements.loadingText.textContent = 'Merging geometries and datasets...';
+                    
+                    const plmParentCodes = {
+                        '75056': { nom: 'Paris', arrondissements: [] },
+                        '69123': { nom: 'Lyon', arrondissements: [] },
+                        '13055': { nom: 'Marseille', arrondissements: [] }
+                    };
+
+                    const featuresToKeep = [];
+                    communesGeoJSON.features.forEach(feature => {
+                        const code = feature.properties.code;
+                        if (code.startsWith('751')) plmParentCodes['75056'].arrondissements.push(feature);
+                        else if (code.startsWith('6938')) plmParentCodes['69123'].arrondissements.push(feature);
+                        else if (code.startsWith('132')) plmParentCodes['13055'].arrondissements.push(feature);
+                        else featuresToKeep.push(feature);
+                    });
+
+                    for (const parentCode in plmParentCodes) {
+                        const cityData = plmParentCodes[parentCode];
+                        if (cityData.arrondissements.length > 0) {
+                            const combinedGeometry = turf.union(...cityData.arrondissements);
+                            const newFeature = {
+                                type: 'Feature',
+                                geometry: combinedGeometry.geometry,
+                                properties: { code: parentCode, nom: cityData.nom }
+                            };
+                            featuresToKeep.push(newFeature);
+                        }
+                    }
+                    communesGeoJSON.features = featuresToKeep;
+
+                    const pvPenetrationArray = [];
+                    communesGeoJSON.features.forEach(feature => {
+                        const inseeCode = feature.properties.code;
+                        const pvStats = pvDataByInsee[inseeCode] || { total_rooftops: 0, pv_rooftops_count: 0 };
+                        
+                        const totalRooftops = parseInt(pvStats.total_rooftops) || 0;
+                        const pvRooftops = parseInt(pvStats.pv_rooftops_count) || 0;
+                        
+                        feature.properties.total_rooftops = totalRooftops;
+                        feature.properties.pv_rooftops_count = pvRooftops;
+                        feature.properties.penetration = totalRooftops > 0 ? (pvRooftops / totalRooftops) * 100 : 0;
+                        
+                        if (feature.properties.penetration > 0) {
+                            pvPenetrationArray.push(feature.properties.penetration);
+                        }
+                    });
+                    
+                    communeFeatures = communesGeoJSON.features;
+
+                    pvPenetrationArray.sort((a, b) => a - b);
+                    const percentileIndex = Math.floor(pvPenetrationArray.length * 0.95);
+                    const scaleMaxPenetration = pvPenetrationArray[percentileIndex] || 0;
+
+                    uiElements.legendHigh.textContent = `${scaleMaxPenetration.toFixed(1)}%`;
+                    uiElements.legendLow.textContent = "0%";
+
+                    map.addSource(COMMUNES_SOURCE_ID, {
+                        'type': 'geojson',
+                        'data': communesGeoJSON,
+                        'generateId': true
+                    });
+
+                    map.addLayer({
+                        'id': COMMUNES_3D_LAYER_ID,
+                        'type': 'fill-extrusion',
+                        'source': COMMUNES_SOURCE_ID,
+                        'paint': {
+                            'fill-extrusion-color': [
+                                'interpolate', ['linear'], ['get', 'penetration'],
+                                0, '#ff0000', // Red for low penetration
+                                scaleMaxPenetration * 0.5, '#ffff00', // Yellow for medium penetration
+                                scaleMaxPenetration, '#00ff00'  // Green for high penetration
+                            ],
+                            'fill-extrusion-height': [
+                                'interpolate', ['linear'], ['get', 'penetration'],
+                                0, 100,
+                                scaleMaxPenetration, 20000
+                            ],
+                            'fill-extrusion-base': 0,
+                            'fill-extrusion-opacity': 0.85
+                        }
+                    });
+
+                    map.addLayer({
+                        'id': COMMUNES_LINES_LAYER_ID,
+                        'type': 'line',
+                        'source': COMMUNES_SOURCE_ID,
+                        'paint': {
+                            'line-color': '#00ffff', // A bright cyan color for selection
+                            'line-width': 3,
+                             'line-opacity': [ // Only show for the hovered feature
+                                'case',
+                                ['boolean', ['feature-state', 'hover'], false],
+                                1,
+                                0
+                            ]
+                        }
+                    });
+
+                    setupInteractions();
+                    uiElements.loadingOverlay.style.display = 'none';
+
+                } catch (error) {
+                    console.error('Failed to load map data:', error);
+                    uiElements.loadingText.textContent = `Error: ${error.message}. Check file paths.`;
+                }
+            }
+            
+            function setupInteractions() {
+                const layerId = COMMUNES_3D_LAYER_ID;
+
+                map.on('mousemove', layerId, (e) => {
+                    map.getCanvas().style.cursor = 'pointer';
+                    if (e.features.length > 0) {
+                        if (hoveredCommuneId !== null) {
+                            map.setFeatureState({ source: COMMUNES_SOURCE_ID, id: hoveredCommuneId }, { hover: false });
+                        }
+                        hoveredCommuneId = e.features[0].id;
+                        map.setFeatureState({ source: COMMUNES_SOURCE_ID, id: hoveredCommuneId }, { hover: true });
+
+                        const props = e.features[0].properties;
+                        uiElements.infoName.textContent = props.nom;
+                        uiElements.infoInsee.textContent = props.code;
+                        uiElements.infoTotal.textContent = props.total_rooftops.toLocaleString();
+                        uiElements.infoPv.textContent = props.pv_rooftops_count.toLocaleString();
+                        uiElements.infoPenetration.textContent = `${props.penetration.toFixed(2)}%`;
+                    }
+                });
+
+                map.on('mouseleave', layerId, () => {
+                    map.getCanvas().style.cursor = '';
+                    if (hoveredCommuneId !== null) {
+                        map.setFeatureState({ source: COMMUNES_SOURCE_ID, id: hoveredCommuneId }, { hover: false });
+                    }
+                    hoveredCommuneId = null;
+                    uiElements.infoName.textContent = 'Hover over a commune';
+                    uiElements.infoInsee.textContent = 'N/A';
+                    uiElements.infoTotal.textContent = 'N/A';
+                    uiElements.infoPv.textContent = 'N/A';
+                    uiElements.infoPenetration.textContent = 'N/A';
+                });
+
+                map.on('click', layerId, (e) => {
+                    const feature = e.features[0];
+                    selectCommune(feature);
+                });
+
+                // --- Search Logic ---
+                uiElements.searchInput.addEventListener('input', (e) => {
+                    const query = e.target.value.toLowerCase();
+                    uiElements.searchResults.innerHTML = '';
+                    if (query.length < 2) return;
+
+                    const results = communeFeatures.filter(f => 
+                        f.properties.nom.toLowerCase().includes(query) ||
+                        f.properties.code.startsWith(query)
+                    ).slice(0, 5); // Limit to 5 results
+
+                    results.forEach(feature => {
+                        const item = document.createElement('div');
+                        item.className = 'search-result-item';
+                        item.textContent = `${feature.properties.nom} (${feature.properties.code})`;
+                        item.onclick = () => {
+                            selectCommune(feature);
+                            uiElements.searchInput.value = '';
+                            uiElements.searchResults.innerHTML = '';
+                        };
+                        uiElements.searchResults.appendChild(item);
+                    });
+                });
+            }
+            
+            function selectCommune(feature) {
+                 if (hoveredCommuneId !== null) {
+                    map.setFeatureState({ source: COMMUNES_SOURCE_ID, id: hoveredCommuneId }, { hover: false });
+                }
+                const featureId = feature.id;
+                if (featureId !== undefined && featureId !== null) {
+                    hoveredCommuneId = featureId;
+                    map.setFeatureState({ source: COMMUNES_SOURCE_ID, id: featureId }, { hover: true });
+                }
+
+                const bbox = turf.bbox(feature.geometry);
+                map.fitBounds(bbox, {
+                    padding: 100,
+                    duration: 1200,
+                    pitch: 60
+                });
+            }
+
+            const creditsModal = document.getElementById('creditsModal');
+            const creditsButton = document.getElementById('credits-button');
+            const closeButton = document.getElementById('closeCreditsModal');
+            creditsButton.onclick = () => { creditsModal.style.display = 'block'; };
+            closeButton.onclick = () => { creditsModal.style.display = 'none'; };
+            window.onclick = (event) => { if (event.target == creditsModal) { creditsModal.style.display = 'none'; } };
+            
+            map.on('load', loadDataAndSetupMap);
+        });
+    </script>
+
+</body>
+</html>
